@@ -14,6 +14,7 @@ from benchmarks.summarize import summarize
 from benchmarks.profile import command
 from benchmarks.artifacts import profile_export
 from benchmarks.plan import settings
+from benchmarks.latency import write_breakdown
 from validate_model import validate
 from test_scheduler import FakeBackend,FakeTokenizer
 
@@ -60,6 +61,42 @@ class PipelineTests(unittest.TestCase):
             row=summarize(root)["runs"][0]
             self.assertEqual(row["request_count.avg"],20)
             self.assertEqual(row["output_token_throughput.avg"],20)
+
+    def test_ttft_breakdown_joins_measured_requests_by_id_and_ranks_client_tail(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            phase = root / "phases/profiling"
+            phase.mkdir(parents=True)
+            telemetry = root / "server-telemetry.jsonl"
+
+            def client(ident, value, phase="profiling"):
+                return dict(metadata=dict(x_request_id=ident, benchmark_phase=phase),
+                            metrics=dict(time_to_first_token=dict(value=value, unit="ms")))
+
+            def server(ident, prefix_hits):
+                return dict(event="request_end", id=f"server-{ident}", client_request_id=ident,
+                            prompt_tokens=64, prefix_hit_tokens=prefix_hits, generated_tokens=128,
+                            queue_seconds=.010, tokenize_seconds=.001, prefix_lookup_seconds=.002,
+                            prefill_kv_prepare_seconds=.003, prefill_forward_seconds=.030,
+                            first_logits_seconds=.050, ttft_worker_seconds=.055,
+                            first_token_after_logits_seconds=.005, first_delta_seconds=.060,
+                            decode_wall_seconds=.300, decode_forward_seconds=.200)
+
+            samples = [client("slow", 100), client("warmup", 200, "warmup"), client("fast", 80)]
+            events = [server("fast", 48), server("warmup", 0), server("slow", 32),
+                      dict(event="first_stream_write", id="server-slow", server_ttft_seconds=.070)]
+            (root / "profile_export.jsonl").write_text("".join(json.dumps(x) + "\n" for x in samples))
+            telemetry.write_text("".join(json.dumps(x) + "\n" for x in events))
+            report = write_breakdown(root, phase / "profile_export_aiperf.json", telemetry)
+            self.assertEqual(report["matched"], 2)
+            self.assertEqual(report["first_stream_writes"], 1)
+            self.assertEqual([r["client_request_id"] for r in report["requests"]], ["slow", "fast"])
+            row = report["tail"]["p99"]["phases"]
+            self.assertEqual(row["prefix_hit_tokens"], 32)
+            self.assertAlmostEqual(row["scheduler_and_bookkeeping_ms"], 4)
+            self.assertAlmostEqual(row["delta_to_stream_write_ms"], 10)
+            self.assertAlmostEqual(row["client_minus_server_ttft_ms"], 30)
+            self.assertEqual(row["decode_wall_ms"], 300)
 
     def test_warmup_alone_is_not_a_successful_benchmark(self):
         with tempfile.TemporaryDirectory() as td:

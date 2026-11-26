@@ -55,6 +55,7 @@ class Ticket:
     events: queue.Queue = field(default_factory=lambda: queue.Queue(128))
     cancelled: threading.Event = field(default_factory=threading.Event)
     submitted: float = field(default_factory=time.perf_counter)
+    client_request_id: str | None = None
 
 
 @dataclass(eq=False)
@@ -71,6 +72,18 @@ class Job:
     logits: dict = field(default_factory=dict)
     texts: dict = field(default_factory=dict)
     first_token: float = None
+    last_token: float = None
+    first_logits: float = None
+    first_delta: float = None
+    queue_seconds: float = 0.0
+    tokenize_seconds: float = 0.0
+    prefix_lookup_seconds: float = 0.0
+    prefix_hit_tokens: int = 0
+    prefill_kv_prepare_seconds: float = 0.0
+    prefill_forward_seconds: float = 0.0
+    decode_forward_seconds: float = 0.0
+    mixed_prefill_forward_seconds: float = 0.0
+    mixed_decode_forward_seconds: float = 0.0
 
 
 class Worker:
@@ -85,6 +98,7 @@ class Worker:
         self.max_sequences = max_sequences
         self.batch, self.audit_enabled = batch, audit
         self.telemetry_path, self.telemetry = telemetry_path, None
+        self.telemetry_lock = threading.Lock()
         if min(blocks, block_size, max_context, max_rows, max_sequences, max_requests) < 1:
             raise ValueError("Capacities must be positive")
         if max_sequences > max_rows:
@@ -102,18 +116,31 @@ class Worker:
         self.thread.start()
         self.ready.result(timeout=900)
 
-    def submit(self, request):
+    def submit(self, request, *, client_request_id=None):
         with self.lock:
             if self.closed or self.stopping.is_set():
                 raise Busy("Server is shutting down")
             if not self.slots.acquire(blocking=False):
                 raise Busy("Request queue is full")
-            ticket = Ticket(dict(request))
+            ticket = Ticket(dict(request), client_request_id=client_request_id)
             self.incoming.put(ticket)
             return ticket
 
     def finish(self, job, error=None):
-        self.record(dict(event="request_end", id=job.ticket.ident, error=str(error) if error else None,
+        self.record(dict(event="request_end", id=job.ticket.ident,
+                         client_request_id=job.ticket.client_request_id, error=str(error) if error else None,
+                         queue_seconds=job.queue_seconds, tokenize_seconds=job.tokenize_seconds,
+                         prefix_lookup_seconds=job.prefix_lookup_seconds, prefix_hit_tokens=job.prefix_hit_tokens,
+                         prompt_tokens=job.prompt_length, prefill_kv_prepare_seconds=job.prefill_kv_prepare_seconds,
+                         prefill_forward_seconds=job.prefill_forward_seconds,
+                         decode_forward_seconds=job.decode_forward_seconds,
+                         mixed_prefill_forward_seconds=job.mixed_prefill_forward_seconds,
+                         mixed_decode_forward_seconds=job.mixed_decode_forward_seconds,
+                         first_logits_seconds=(job.first_logits-job.ticket.submitted) if job.first_logits else None,
+                         first_token_after_logits_seconds=(job.first_token-job.first_logits)
+                         if job.first_token and job.first_logits else None,
+                         first_delta_seconds=(job.first_delta-job.ticket.submitted) if job.first_delta else None,
+                         decode_wall_seconds=(job.last_token-job.first_token) if job.first_token else None,
                          queue_and_tokenize_seconds=job.ticket.started-job.ticket.submitted,
                          ttft_worker_seconds=(job.first_token-job.ticket.submitted) if job.first_token else None,
                          total_worker_seconds=time.perf_counter()-job.ticket.submitted,
@@ -135,6 +162,7 @@ class Worker:
         self.slots.release()
 
     def admit(self, ticket):
+        admitted = time.perf_counter()
         req = ticket.request
         def integer(name, default, low, high):
             value = req.get(name, default)
@@ -154,14 +182,19 @@ class Worker:
         if beams > 1 and temperature != 0:
             raise ValueError("Beam search uses untempered log probabilities; temperature must be 0")
         seed = integer("seed", 0, 0, 2**32-1)
+        tokenize_start = time.perf_counter()
         tokens = self.tokenizer.encode(req["prompt"])
+        tokenize_seconds = time.perf_counter() - tokenize_start
         if not tokens or len(tokens) + maximum > self.max_context:
             raise ValueError("Empty prompt or prompt + output exceeds context limit")
         width = max(samples, beams)
+        lookup_start = time.perf_counter()
         seq = self.cache.new(tokens)
         ticket.started = time.perf_counter()
         return Job(ticket, [seq], len(tokens), maximum, width, beams > 1,
-                   temperature, np.random.default_rng(seed), bool(req.get("ignore_eos", False)))
+                   temperature, np.random.default_rng(seed), bool(req.get("ignore_eos", False)),
+                   queue_seconds=admitted-ticket.submitted, tokenize_seconds=tokenize_seconds,
+                   prefix_lookup_seconds=ticket.started-lookup_start, prefix_hit_tokens=seq.computed)
 
     def reset_job(self, job):
         for seq in job.seqs:
@@ -175,8 +208,6 @@ class Worker:
         Beam score is cumulative log probability, without a length penalty.
         Completed beams compete with live candidates in a fixed-width beam.
         """
-        if job.first_token is None:
-            job.first_token = time.perf_counter()
         candidates = []
         serial = itertools.count()
         for i, seq in enumerate(job.seqs):
@@ -222,6 +253,10 @@ class Worker:
                 stop = token in self.backend.eos and not job.ignore_eos
                 child.finished = stop or len(child.generated) >= job.max_tokens
                 child.reason = "stop" if stop else "length"
+        if any(token is not None for _, _, _, token in chosen):
+            job.last_token = time.perf_counter()
+            if job.first_token is None:
+                job.first_token = job.last_token
         for index, seq in enumerate(job.seqs):
             if index not in reused:
                 self.cache.reset(seq)
@@ -242,6 +277,8 @@ class Worker:
                     raise RuntimeError("Tokenizer emitted a non-monotonic text prefix")
                 delta = text[len(old):]
                 if delta:
+                    if job.first_delta is None:
+                        job.first_delta = time.perf_counter()
                     job.ticket.events.put_nowait(dict(index=i, text=delta, finish_reason=None))
                     job.texts[i] = text
 
@@ -250,19 +287,22 @@ class Worker:
                                      skip_special_tokens=job.ticket.request.get("skip_special_tokens", True))
 
     def record(self, event):
-        if self.telemetry:
-            event["time"] = time.time()
-            try:
-                self.telemetry.write(json.dumps(event)+"\n")
-                self.telemetry.flush()
-            except OSError:
-                # Diagnostics must never strand live cache references.
+        if not self.telemetry:
+            return
+        with self.telemetry_lock:
+            if self.telemetry:
+                event["time"] = time.time()
                 try:
-                    self.telemetry.close()
+                    self.telemetry.write(json.dumps(event)+"\n")
+                    self.telemetry.flush()
                 except OSError:
-                    pass
-                self.telemetry = None
-                self.stats["telemetry_errors"] = self.stats.get("telemetry_errors", 0)+1
+                    # Diagnostics must never strand live cache references.
+                    try:
+                        self.telemetry.close()
+                    except OSError:
+                        pass
+                    self.telemetry = None
+                    self.stats["telemetry_errors"] = self.stats.get("telemetry_errors", 0)+1
 
     def run(self):
         active = []
@@ -306,6 +346,7 @@ class Worker:
                                             if not any(s is chosen for chosen in selected) and j in active)
                     take = 1 if len(seq.tokens)-seq.computed == 1 else min(32, max(1, budget-remaining_decodes))
                     end = min(len(seq.tokens), seq.computed + min(take, budget))
+                    prepare_start = time.perf_counter() if self.telemetry and job.first_token is None else None
                     try:
                         self.cache.prepare(seq, end)
                     except CacheFull:
@@ -322,12 +363,26 @@ class Worker:
                             if active[0] is job and not selected:
                                 self.finish(job, exc); active.remove(job)
                             continue
+                    if prepare_start is not None:
+                        job.prefill_kv_prepare_seconds += time.perf_counter() - prepare_start
                     selected.append(seq); ends.append(end); jobs.append(job)
                     budget -= end-seq.computed
                 if selected:
                     start = time.perf_counter()
                     logits = self.backend.forward(selected, ends)
-                    elapsed = time.perf_counter()-start
+                    forward_end = time.perf_counter()
+                    elapsed = forward_end-start
+                    if self.telemetry:
+                        prefill = {job for job in jobs if job.first_token is None}
+                        decode = set(jobs) - prefill
+                        for job in prefill:
+                            job.prefill_forward_seconds += elapsed
+                            if decode:
+                                job.mixed_prefill_forward_seconds += elapsed
+                        for job in decode:
+                            job.decode_forward_seconds += elapsed
+                            if prefill:
+                                job.mixed_decode_forward_seconds += elapsed
                     self.stats["forward_wall_seconds"] += elapsed
                     self.stats["max_batch_sequences"] = max(self.stats["max_batch_sequences"], len(selected))
                     self.stats["iterations"] += 1
@@ -343,6 +398,8 @@ class Worker:
                         seq.computed = end
                         self.cache.publish(seq, job.prompt_length)
                         if end == len(seq.tokens):
+                            if job.first_token is None:
+                                job.first_logits = forward_end
                             job.logits[id(seq)] = logit
                 for job in list(active):
                     if job.ticket.cancelled.is_set():
@@ -384,8 +441,10 @@ class Worker:
                 self.tokenizer.close()
             if self.backend:
                 self.backend.close()
-            if self.telemetry:
-                self.telemetry.close()
+            with self.telemetry_lock:
+                if self.telemetry:
+                    self.telemetry.close()
+                    self.telemetry = None
 
     def _admit(self, ticket, active):
         try:

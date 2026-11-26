@@ -68,17 +68,44 @@ def compare(run_dir, variant, summary):
         if not all(c in peer_rates for c in CONCURRENCIES):
             continue
         custom, vllm = (own_rates, peer_rates) if variant == "paged_shared" else (peer_rates, own_rates)
+        custom_summary, vllm_summary = (summary, saved) if variant == "paged_shared" else (saved, summary)
+        ttft = ttft_comparison(custom_summary, vllm_summary, requests)
         return {
             "paired_run": str(path.parent),
             "cases": [
                 {"concurrency": c, "paged_shared_tokens_per_second": custom[c],
                  "vllm_shared_tokens_per_second": vllm[c],
                  "vllm_to_paged_shared_x": vllm[c] / custom[c],
-                 "percent_of_vllm": 100 * custom[c] / vllm[c]}
+                 "percent_of_vllm": 100 * custom[c] / vllm[c],
+                 "ttft": ttft.get(c, {})}
                 for c in CONCURRENCIES if c in own_rates
             ],
         }
     return {"paired_run": None, "cases": []}
+
+
+def ttft_comparison(custom, vllm, requests):
+    def selected(summary, variant):
+        return {row["concurrency"]: row for row in summary["runs"]
+                if row["variant"] == variant and row["workload"] == "shared_prefix"
+                and row["status"] == "exported" and row.get("request_count.avg") == requests}
+
+    peers = selected(vllm, "vllm_shared")
+    comparisons = {}
+    for c, row in selected(custom, "paged_shared").items():
+        baseline = peers.get(c, {})
+        unit = row.get("time_to_first_token.unit")
+        if unit and unit == baseline.get("time_to_first_token.unit"):
+            metrics = {}
+            for percentile in ("p50", "p95", "p99"):
+                key = f"time_to_first_token.{percentile}"
+                left, right = row.get(key), baseline.get(key)
+                if all(isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+                       for value in (left, right)):
+                    metrics[percentile] = {"custom": left, "vllm": right, "unit": unit,
+                                           "custom_divided_by_vllm": left / right}
+            comparisons[c] = metrics
+    return comparisons
 
 
 @app.function(image=image, gpu="H100!", volumes={"/models": models, "/results": results}, timeout=7200)
@@ -130,6 +157,10 @@ def show_summary(result):
               f"{row.get(THROUGHPUT)} output tok/s | "
               f"TTFT {row.get('time_to_first_token.avg')} {row.get('time_to_first_token.unit')} | "
               f"ITL {row.get('inter_token_latency.avg')} {row.get('inter_token_latency.unit')}")
+        if row.get("artifact") and result["variant"] == "paged_shared":
+            breakdown = Path(result["local_path"]) / row["artifact"] / "latency-breakdown.json"
+            if breakdown.is_file():
+                print(f"  TTFT breakdown: {breakdown}")
 
     comparison = summary["vllm_throughput_comparison"]
     if not comparison["paired_run"]:
@@ -139,11 +170,12 @@ def show_summary(result):
     for row in comparison["cases"]:
         print(f"Concurrency {row['concurrency']} | vLLM / custom = {row['vllm_to_paged_shared_x']:.2f}x "
               f"| custom delivers {row['percent_of_vllm']:.1f}% of vLLM throughput")
+        for percentile, metric in row.get("ttft", {}).items():
+            print(f"  {percentile} TTFT custom / vLLM: {metric['custom_divided_by_vllm']:.2f}x")
 
 
-def run_smoke_and_download(variant, revision):
-    result = run_smoke.remote(variant, revision)
-    remote_path = PurePosixPath(result["path"])
+def download_run(remote, parent):
+    remote_path = PurePosixPath(remote)
     try:
         relative_path = remote_path.relative_to("/results")
     except ValueError as exc:
@@ -151,12 +183,22 @@ def run_smoke_and_download(variant, revision):
     if not relative_path.parts:
         raise RuntimeError(f"Expected a run directory below /results, got: {remote_path}")
 
-    local_path = LOCAL_RESULTS.joinpath(*relative_path.parts)
-    local_path.mkdir(parents=True, exist_ok=True)
+    parent.mkdir(parents=True, exist_ok=True)
+    local_path = parent / relative_path.name
+    if local_path.exists():
+        raise FileExistsError(f"Result destination already exists: {local_path}")
+    # Modal adds the remote directory basename to an existing local directory.
     subprocess.run(
         [sys.executable, "-m", "modal", "volume", "get", RESULTS_VOLUME_NAME,
-         f"/{relative_path.as_posix()}", str(local_path)],
+         f"/{relative_path.as_posix()}", str(parent)],
         check=True,
     )
-    result["local_path"] = str(local_path)
+    if not local_path.is_dir():
+        raise RuntimeError(f"Modal did not create the expected download directory: {local_path}")
+    return local_path
+
+
+def run_smoke_and_download(variant, revision):
+    result = run_smoke.remote(variant, revision)
+    result["local_path"] = str(download_run(result["path"], LOCAL_RESULTS / "shared-smoke" / variant))
     show_summary(result)

@@ -71,7 +71,7 @@ def handler(worker, model):
                     raise ValueError("Beam search requires stream=false because the winning prefix can change")
 
                 # Submit work and assign a response ID and creation timestamp.
-                ticket = worker.submit(request)
+                ticket = worker.submit(request, client_request_id=self.headers.get("X-Request-ID"))
                 ident, created = ticket.ident, int(time.time())
 
                 def envelope(choices, usage=None):
@@ -82,10 +82,17 @@ def handler(worker, model):
                         result["usage"] = usage
                     return result
 
+                first_text_sent = False
+
                 def send(data):
+                    nonlocal first_text_sent
                     # Write and immediately flush one Server-Sent Events frame.
                     self.wfile.write(("data: "+json.dumps(data, ensure_ascii=False)+"\n\n").encode())
                     self.wfile.flush()
+                    if not first_text_sent and any(choice.get("text") for choice in data.get("choices", [])):
+                        first_text_sent = True
+                        worker.record(dict(event="first_stream_write", id=ident,
+                                           server_ttft_seconds=time.perf_counter()-ticket.submitted))
 
                 if request.get("stream"):
                     # Wait for validation or the first output before committing HTTP 200.

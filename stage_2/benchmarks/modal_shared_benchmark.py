@@ -1,6 +1,6 @@
 """Compare the custom CUDA server and vLLM on the shared-prefix workload.
 
-Run from stage_2: python -m modal run benchmarks\\modal_shared_benchmark.py --size compact
+Run from stage_2: python -m modal run -m benchmarks.modal_shared_benchmark::main --size compact
 Use --size full or --size both for the larger run or both sizes on one H100.
 """
 from datetime import datetime, timezone
@@ -8,21 +8,24 @@ import json
 import math
 from pathlib import Path, PurePosixPath
 import subprocess
-import sys
 import uuid
 
 import modal
 
 from benchmarks.modal_phase2 import (
-    RESULTS_VOLUME_NAME, benchmark_image, build, checkpoint, models, results,
+    benchmark_image, build, checkpoint, models, results,
 )
 from benchmarks.plan import DEFAULTS
-from benchmarks.shared_smoke import CONCURRENCIES, MODEL, REVISION
+from benchmarks.shared_smoke import (
+    CONCURRENCIES, LOCAL_RESULTS, MODEL, REVISION, download_run,
+)
 
 app = modal.App("qwen3-shared-prefix-benchmark")
 image = benchmark_image.add_local_python_source("benchmarks")
 VARIANTS = ("paged_shared", "vllm_shared")
 SIZES = ("compact", "full")
+# Full keeps the smoke request shape but runs 1000 x 128 output tokens per case.
+FULL_CASE_TIMEOUT = 3 * 60 * 60
 METRICS = {
     "output_token_throughput.avg": "Output throughput",
     "time_to_first_token.avg": "Mean TTFT",
@@ -36,7 +39,7 @@ def compare(summary, requests):
         for row in summary["runs"]
         if row["status"] == "exported"
         and row["workload"] == "shared_prefix"
-        and row["request_count.avg"] == requests
+        and row.get("request_count.avg") == requests
     }
     pairs = []
     for concurrency in CONCURRENCIES:
@@ -58,7 +61,7 @@ def compare(summary, requests):
 
 
 @app.function(image=image, gpu="H100!", volumes={"/models": models, "/results": results},
-              timeout=14400)
+              timeout=24 * 60 * 60)
 def run_benchmark(size: str, revision: str):
     sizes = SIZES if size == "both" else (size,)
     model_dir, sha = checkpoint(MODEL, revision)
@@ -76,12 +79,14 @@ def run_benchmark(size: str, revision: str):
     for name in sizes:
         out = root / name
         requests = DEFAULTS[name]["requests"]
-        # Keep the smoke workload matrix, warmup, repeat count, and timeout.
+        # Keep the smoke workload matrix, warmup and repeat count.
+        case_timeout = FULL_CASE_TIMEOUT if name == "full" else DEFAULTS["smoke"]["case_timeout"]
+        print(f"Starting {name}: {requests} measured requests per case; results: {out}", flush=True)
         completed = subprocess.run(
             ["python", "/project/benchmarks/run_suite.py", "--model-dir", model_dir,
              "--model", MODEL, "--revision", sha, "--library-dir", "/tmp/build",
              "--output", str(out), "--preset", "smoke", "--requests", str(requests),
-             "--variants", *VARIANTS],
+             "--case-timeout", str(case_timeout), "--variants", *VARIANTS],
         )
         pairs = []
         if out.exists():
@@ -90,7 +95,8 @@ def run_benchmark(size: str, revision: str):
             if summary_path.is_file():
                 summary = json.loads(summary_path.read_text(encoding="utf-8"))
                 pairs = compare(summary, requests)
-            report = {"size": name, "requests_per_case": requests, "cases": pairs}
+            report = {"size": name, "requests_per_case": requests,
+                      "suite_exit_code": completed.returncode, "cases": pairs}
             (out / "comparison.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
             results.commit()
         else:
@@ -108,16 +114,11 @@ def main(size: str = "compact", revision: str = REVISION):
         raise ValueError("Size must be compact, full, or both")
     reports = run_benchmark.remote(size, revision)
     for report in reports:
-        relative = PurePosixPath(report["path"]).relative_to("/results")
-        local = Path(__file__).resolve().parent.joinpath("results", *relative.parts)
-        local.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [sys.executable, "-m", "modal", "volume", "get", RESULTS_VOLUME_NAME,
-             "/" + relative.as_posix(), str(local)],
-            check=True,
-        )
-        print(f"{report['size']} ({report['requests_per_case']} measured requests per case)")
-        print(f"Modal results: {report['path']}")
+        run_id = PurePosixPath(report["path"]).parent.name
+        print(f"{report['size']} ({report['requests_per_case']} measured requests per case, "
+              f"suite exit code {report['suite_exit_code']})", flush=True)
+        print(f"Modal results: {report['path']}", flush=True)
+        local = download_run(report["path"], LOCAL_RESULTS / "shared-benchmark" / run_id)
         print(f"Local results: {local}")
         for pair in report["cases"]:
             c = pair["concurrency"]

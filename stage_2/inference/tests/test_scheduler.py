@@ -215,13 +215,19 @@ class SchedulerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path=Path(td)/"events.jsonl"; w=worker(telemetry_path=path)
             try:
-                ticket=w.submit(dict(prompt="1 2 3",max_tokens=3))
+                ticket=w.submit(dict(prompt="1 2 3",max_tokens=3,stream=True),
+                                client_request_id="aiperf-id")
                 ticket.future.result(10)
             finally: w.close()
             events=[json.loads(s) for s in path.read_text().splitlines()]
             end=next(e for e in events if e["event"]=="request_end")
             self.assertEqual(end["id"],ticket.ident)
             self.assertEqual(end["generated_tokens"],3)
+            self.assertEqual(end["client_request_id"],"aiperf-id")
+            self.assertLessEqual(end["first_logits_seconds"],end["ttft_worker_seconds"])
+            self.assertLessEqual(end["ttft_worker_seconds"],end["first_delta_seconds"])
+            self.assertGreater(end["prefill_forward_seconds"],0)
+            self.assertGreater(end["decode_forward_seconds"],0)
             self.assertGreaterEqual(end["ttft_worker_seconds"],end["queue_and_tokenize_seconds"])
             self.assertTrue(any(e["event"]=="iteration" and e["used_blocks"]>0 for e in events))
 

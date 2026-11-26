@@ -21,6 +21,7 @@ ROOT=Path(__file__).resolve().parent.parent
 sys.path.insert(0,str(ROOT))
 from benchmarks.profile import command
 from benchmarks.artifacts import profile_export
+from benchmarks.latency import write_breakdown
 from benchmarks.plan import cases, settings, DEFAULTS
 VARIANTS={
     "uncached": ("none", False, False),
@@ -189,6 +190,14 @@ def execute(args):
                                 raise RuntimeError(f"No measured AIPerf export in {run_dir}; inspect client.log")
                             (run_dir/"selected-export.json").write_text(json.dumps(
                                 {"path":str(export.relative_to(run_dir))},indent=2))
+                            if variant == "paged_shared":
+                                try:
+                                    breakdown = write_breakdown(run_dir, export, logdir/"server-telemetry.jsonl")
+                                    print(f"[{variant}] TTFT breakdown: {breakdown['status']}, "
+                                          f"{breakdown['matched']} matched requests", flush=True)
+                                except (ValueError, KeyError, TypeError, OSError) as exc:
+                                    print(f"[{variant}] Could not build TTFT breakdown in {run_dir}: {exc}",
+                                          flush=True)
                             print(f"[{variant}] completed {name}, repeat {item['repeat']+1}",flush=True)
                         except (subprocess.SubprocessError,RuntimeError) as exc:
                             failures.append(dict(item,error=str(exc)))

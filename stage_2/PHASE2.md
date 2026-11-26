@@ -105,6 +105,28 @@ normal KV cache; this is not a claimed vLLM-without-KV-cache comparison.
   real-model/API smoke checks here; equality to vLLM tokenization is not assumed
   from matching model filenames.
 
+## Shared-prefix latency diagnosis
+
+Run the custom smoke from `stage_2/` with `python -m modal run modal_aipref.py`.
+For each concurrency, open the `latency-breakdown.json` printed beside the
+smoke summary. The report joins measured AIPerf requests to server telemetry
+using the HTTP request ID and ranks the same requests by client TTFT. It
+exposes admission queue wait, tokenization, prefix lookup and hit tokens,
+prefill KV preparation, prefill forward, scheduling gaps, first token
+selection, first text flush, and decode wall/forward time. Mixed batch forward
+measurements are already included in the corresponding forward total.
+
+Use the client TTFT percentile ratios from matching custom and vLLM runs to
+check the 10x target. Use the request rows to diagnose those results. A smoke
+run's p95/p99 rank selects a small number of requests and may not equal the
+interpolated percentile in AIPerf's aggregate export.
+
+To run the same shared-prefix workload at larger sample counts, use
+`python -m modal run -m benchmarks.modal_shared_benchmark::main --size compact`
+for 30 requests per case or substitute `--size full` for 1,000. Both retain the
+smoke workload, concurrencies, and warmup. Full allows up to three hours per case.
+Downloaded runs are stored under `results/shared-benchmark/<run-id>/`.
+
 ## Outputs
 
 Results live in the persistent Modal volume `qwen3-week-7-8-results`. The shared
