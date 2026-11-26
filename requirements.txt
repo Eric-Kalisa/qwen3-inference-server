@@ -1,0 +1,8 @@
+modal
+huggingface_hub
+# CPU PyTorch generates BF16 references; nvcc supplies CUDA Tile for the C++ runner.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.1+cpu
+safetensors
+sqlalchemy<2.1
+transformers

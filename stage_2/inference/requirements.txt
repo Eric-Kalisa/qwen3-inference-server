@@ -1,0 +1,4 @@
+# CUDA inference uses NumPy and the native runtime only. No torch/transformers.
+numpy==2.2.6
+modal==1.6.3
+huggingface-hub==0.36.0

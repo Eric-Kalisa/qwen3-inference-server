@@ -1,0 +1,2 @@
+# Separate client environment: not an inference-server dependency.
+aiperf==0.13.0

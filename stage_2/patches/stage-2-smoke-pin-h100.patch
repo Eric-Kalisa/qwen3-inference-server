@@ -1,0 +1,24 @@
+--- a/stage_2/benchmarks/shared_smoke.py
++++ b/stage_2/benchmarks/shared_smoke.py
+@@ -81,7 +81,7 @@
+     return {"paired_run": None, "cases": []}
+ 
+ 
+-@app.function(image=image, gpu="H100", volumes={"/models": models, "/results": results}, timeout=7200)
++@app.function(image=image, gpu="H100!", volumes={"/models": models, "/results": results}, timeout=7200)
+ def run_smoke(variant: str, revision: str):
+     if variant not in ("paged_shared", "vllm_shared"):
+         raise ValueError(f"Unknown shared-prefix variant: {variant}")
+--- a/stage_2/benchmarks/run_suite.py
++++ b/stage_2/benchmarks/run_suite.py
+@@ -134,7 +134,9 @@
+     gpu=subprocess.check_output(["nvidia-smi","--query-gpu=name,uuid,driver_version,memory.total",
+                                  "--format=csv,noheader"],text=True)
+     if "H100" not in gpu or len(gpu.strip().splitlines()) != 1:
+-        raise RuntimeError("Use one dedicated visible H100")
++        raise RuntimeError(
++            f"Expected one visible H100. nvidia-smi reported: {gpu.strip() or 'no GPUs'}"
++        )
+     hashes={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in sorted(ROOT.rglob("*")) if p.is_file() and
+             p.suffix in (".py",".cu",".cpp",".json") and

@@ -1,0 +1,53 @@
+test_loader_and_packed_metadata_without_torch (test_backend.BackendTests.test_loader_and_packed_metadata_without_torch) ... ok
+test_missing_weight_cleans_up_native_handle (test_backend.BackendTests.test_missing_weight_cleans_up_native_handle) ... ok
+test_scaled_rope_rejected_before_native_context_creation (test_backend.BackendTests.test_scaled_rope_rejected_before_native_context_creation) ... ok
+test_tied_checkpoint_with_explicit_lm_head_does_not_duplicate (test_backend.BackendTests.test_tied_checkpoint_with_explicit_lm_head_does_not_duplicate) ... ok
+test_tied_checkpoint_without_lm_head_uses_embedding (test_backend.BackendTests.test_tied_checkpoint_without_lm_head_uses_embedding) ... ok
+test_contiguous_reserves_run_and_copies_fork (test_cache.CacheTests.test_contiguous_reserves_run_and_copies_fork) ... ok
+test_copy_failure_rolls_back (test_cache.CacheTests.test_copy_failure_rolls_back) ... ok
+test_exact_prompt_recomputes_last_block_for_logits (test_cache.CacheTests.test_exact_prompt_recomputes_last_block_for_logits) ... ok
+test_full_boundary_appends_without_copy (test_cache.CacheTests.test_full_boundary_appends_without_copy) ... ok
+test_longest_exact_prefix_and_lifetime (test_cache.CacheTests.test_longest_exact_prefix_and_lifetime) ... ok
+test_non_owner_rejected (test_cache.CacheTests.test_non_owner_rejected) ... ok
+test_oom_is_transactional (test_cache.CacheTests.test_oom_is_transactional) ... ok
+test_random_fork_append_free_eviction_invariants (test_cache.CacheTests.test_random_fork_append_free_eviction_invariants) ... ok
+test_shared_partial_tail_cow_preserves_parent_and_sibling (test_cache.CacheTests.test_shared_partial_tail_cow_preserves_parent_and_sibling) ... ok
+test_fragmented_blocks_and_context_beyond_128 (test_cuda.CudaTests.test_fragmented_blocks_and_context_beyond_128) ... skipped 'CUDA runtime not configured'
+test_free_reuse_and_prefix_lifetime (test_cuda.CudaTests.test_free_reuse_and_prefix_lifetime) ... skipped 'CUDA runtime not configured'
+test_full_and_chunked_prefill_match_independent_oracle (test_cuda.CudaTests.test_full_and_chunked_prefill_match_independent_oracle) ... skipped 'CUDA runtime not configured'
+test_native_owner_thread_guard (test_cuda.CudaTests.test_native_owner_thread_guard) ... skipped 'CUDA runtime not configured'
+test_native_rejects_aliases_before_gpu_launch (test_cuda.CudaTests.test_native_rejects_aliases_before_gpu_launch) ... skipped 'CUDA runtime not configured'
+test_shared_tail_cow_and_mixed_batch_match_oracle (test_cuda.CudaTests.test_shared_tail_cow_and_mixed_batch_match_oracle) ... skipped 'CUDA runtime not configured'
+test_invalid_requests_return_errors_before_streaming (test_http.HttpTests.test_invalid_requests_return_errors_before_streaming) ... ok
+test_parallel_http_clients_are_isolated (test_http.HttpTests.test_parallel_http_clients_are_isolated) ... ok
+test_stream_matches_nonstream_and_has_usage_and_done (test_http.HttpTests.test_stream_matches_nonstream_and_has_usage_and_done) ... ok
+test_failure_and_missing_metrics_are_not_reported_as_clean_speedups (test_phase2.PipelineTests.test_failure_and_missing_metrics_are_not_reported_as_clean_speedups) ... ok
+test_full_model_gate_compares_identical_histories_and_reuses_prefix (test_phase2.PipelineTests.test_full_model_gate_compares_identical_histories_and_reuses_prefix) ... ok
+test_full_preset_contains_latency_throughput_and_bursty_tests (test_phase2.PipelineTests.test_full_preset_contains_latency_throughput_and_bursty_tests) ... ok
+test_gpu_contexts_must_disappear_before_next_server (test_phase2.PipelineTests.test_gpu_contexts_must_disappear_before_next_server) ... ok
+test_open_loop_has_no_hidden_client_concurrency_cap (test_phase2.PipelineTests.test_open_loop_has_no_hidden_client_concurrency_cap) ... ok
+test_phase_exports_prefer_profiling_and_do_not_mix_warmup (test_phase2.PipelineTests.test_phase_exports_prefer_profiling_and_do_not_mix_warmup) ... ok
+test_readiness_accepts_vllm_empty_200_response (test_phase2.PipelineTests.test_readiness_accepts_vllm_empty_200_response) ... ok
+test_readiness_fails_immediately_if_server_exits (test_phase2.PipelineTests.test_readiness_fails_immediately_if_server_exits) ... ok
+test_server_variants_hold_cache_budget_and_prefix_policy_constant (test_phase2.PipelineTests.test_server_variants_hold_cache_budget_and_prefix_policy_constant) ... ok
+test_stuck_server_is_killed_and_reaped (test_phase2.PipelineTests.test_stuck_server_is_killed_and_reaped) ... ok
+test_teardown_always_terminates_and_reaps_server_group (test_phase2.PipelineTests.test_teardown_always_terminates_and_reaps_server_group) ... ok
+test_warmup_alone_is_not_a_successful_benchmark (test_phase2.PipelineTests.test_warmup_alone_is_not_a_successful_benchmark) ... ok
+test_beam_pruning_matches_exhaustive_small_search (test_scheduler.SchedulerTests.test_beam_pruning_matches_exhaustive_small_search) ... ok
+test_cancel_during_gpu_call_waits_before_reuse (test_scheduler.SchedulerTests.test_cancel_during_gpu_call_waits_before_reuse) ... ok
+test_concurrent_clients_match_serial_and_no_interleaved_backend_calls (test_scheduler.SchedulerTests.test_concurrent_clients_match_serial_and_no_interleaved_backend_calls) ... ok
+test_concurrent_submit_cancel_stress_all_futures_settle (test_scheduler.SchedulerTests.test_concurrent_submit_cancel_stress_all_futures_settle) ... ok
+test_device_failure_fails_all_tickets_and_poisoned_worker_stops (test_scheduler.SchedulerTests.test_device_failure_fails_all_tickets_and_poisoned_worker_stops) ... ok
+test_eos_stops_and_ignore_eos_continues (test_scheduler.SchedulerTests.test_eos_stops_and_ignore_eos_continues) ... ok
+test_invalid_request_does_not_kill_worker (test_scheduler.SchedulerTests.test_invalid_request_does_not_kill_worker) ... ok
+test_modes_match_with_long_prompt_and_partial_prefill (test_scheduler.SchedulerTests.test_modes_match_with_long_prompt_and_partial_prefill) ... ok
+test_preemption_recomputes_without_corrupting_outputs (test_scheduler.SchedulerTests.test_preemption_recomputes_without_corrupting_outputs) ... ok
+test_queue_limit_and_shutdown_submit_race (test_scheduler.SchedulerTests.test_queue_limit_and_shutdown_submit_race) ... ok
+test_seeded_samples_and_prefix_hits (test_scheduler.SchedulerTests.test_seeded_samples_and_prefix_hits) ... ok
+test_slow_stream_consumer_is_cancelled_without_leaking_cache (test_scheduler.SchedulerTests.test_slow_stream_consumer_is_cancelled_without_leaking_cache) ... ok
+test_telemetry_correlates_requests_and_iterations (test_scheduler.SchedulerTests.test_telemetry_correlates_requests_and_iterations) ... ok
+
+----------------------------------------------------------------------
+Ran 48 tests in 3.872s
+
+OK (skipped=6)

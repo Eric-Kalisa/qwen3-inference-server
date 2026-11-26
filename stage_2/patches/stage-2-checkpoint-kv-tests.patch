@@ -1,0 +1,128 @@
+diff --git a/stage_2/benchmarks/modal_phase2.py b/stage_2/benchmarks/modal_phase2.py
+--- a/stage_2/benchmarks/modal_phase2.py
++++ b/stage_2/benchmarks/modal_phase2.py
+@@ -66,6 +66,21 @@
+     finally: results.commit()
+ 
+ 
++@app.function(image=validation_image, gpu="H100", volumes={"/models": models}, timeout=1800)
++def check_checkpoint_kv(revision: str = "main"):
++    import os
++
++    path, sha = checkpoint("Qwen/Qwen3-0.6B", revision)
++    print(f"Qwen/Qwen3-0.6B revision: {sha}", flush=True)
++    build()
++    env = dict(os.environ, QWEN_KV_MODEL_DIR=path,
++               QWEN_CUDA_LIBRARY="/tmp/build/libqwen3_runtime.so")
++    subprocess.run(
++        ["python", "-m", "unittest", "discover", "-s", "tests", "-p", "test_checkpoint_kv.py", "-v"],
++        cwd="/project/inference", env=env, check=True,
++    )
++
++
+ @app.function(image=benchmark_image,gpu="H100",volumes={"/models":models,"/results":results},timeout=86400)
+ def benchmark(model: str="Qwen/Qwen3-4B",revision: str="main",preset: str="smoke",
+               variants: str="uncached,contiguous,paged,paged_batch,vllm",
+diff --git a/stage_2/inference/tests/test_checkpoint_kv.py b/stage_2/inference/tests/test_checkpoint_kv.py
+new file mode 100644
+--- /dev/null
++++ b/stage_2/inference/tests/test_checkpoint_kv.py
+@@ -0,0 +1,98 @@
++"""Opt-in CUDA KV checks with a real Qwen3 checkpoint and fixed token IDs."""
++import ctypes as C
++import os
++import unittest
++from unittest.mock import patch
++
++import numpy as np
++
++from backend import CudaBackend
++from cache import BlockManager
++
++
++BLOCK_SIZE = 16
++PROMPT_IDS = (11, 17, 23, 31, 7, 19, 29, 5, 13, 3, 2, 10, 9, 1, 8)
++CONTINUATION_IDS = (6, 18, 22)
++TOKEN_IDS = PROMPT_IDS + CONTINUATION_IDS
++PREFIX_LENGTHS = range(len(PROMPT_IDS), len(TOKEN_IDS) + 1)
++ATOL = 0.1
++RTOL = 0.02
++
++
++def trace(backend, mode):
++    cache = BlockManager(2, BLOCK_SIZE, backend.copy_block, mode=mode, max_context=len(TOKEN_IDS))
++    sequence = cache.new(TOKEN_IDS)
++    logits, calls = {}, {}
++    native_forward = backend.lib.q_forward
++
++    def record_forward(handle, ids, positions, owners, table, last, rows, sequences, output):
++        # Copy metadata while the bridge's NumPy arrays still own the pointers.
++        calls[end] = dict(
++            rows=rows,
++            positions=tuple((C.c_int32 * rows).from_address(positions)),
++            blocks=tuple((C.c_int32 * backend.max_blocks).from_address(table)),
++        )
++        return native_forward(handle, ids, positions, owners, table, last, rows, sequences, output)
++
++    try:
++        with patch.object(backend.lib, "q_forward", side_effect=record_forward):
++            for end in PREFIX_LENGTHS:
++                cache.prepare(sequence, end)
++                logits[end] = backend.forward([sequence], [end])[0]
++                sequence.computed = end
++                if mode == "none":
++                    cache.reset(sequence)
++    finally:
++        cache.reset(sequence)
++        cache.close()
++    return logits, calls
++
++
++@unittest.skipUnless(
++    os.environ.get("QWEN_CUDA_LIBRARY") and os.environ.get("QWEN_KV_MODEL_DIR"),
++    "Set QWEN_CUDA_LIBRARY and QWEN_KV_MODEL_DIR to run the real-checkpoint CUDA tests",
++)
++class CheckpointKVTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        results = {}
++        for mode in ("none", "contiguous"):
++            # Fresh KV buffers keep replay data from hiding a missed append.
++            backend = CudaBackend(
++                os.environ["QWEN_KV_MODEL_DIR"], os.environ["QWEN_CUDA_LIBRARY"],
++                blocks=2, block_size=BLOCK_SIZE, max_context=len(TOKEN_IDS),
++                max_rows=len(TOKEN_IDS), max_sequences=1,
++            )
++            try:
++                results[mode] = trace(backend, mode)
++            finally:
++                backend.close()
++        cls.replay_logits, cls.replay_calls = results["none"]
++        cls.cached_logits, cls.cached_calls = results["contiguous"]
++
++    def test_cuda_rows_shrink_after_prefill(self):
++        self.assertEqual([call["rows"] for call in self.replay_calls.values()], [15, 16, 17, 18])
++        self.assertEqual([call["rows"] for call in self.cached_calls.values()], [15, 1, 1, 1])
++
++    def assert_logits_match(self, prefix_length):
++        expected = self.replay_logits[prefix_length]
++        actual = self.cached_logits[prefix_length]
++        self.assertTrue(np.isfinite(expected).all(), "Full replay produced nonfinite logits")
++        self.assertTrue(np.isfinite(actual).all(), "Cached execution produced nonfinite logits")
++        np.testing.assert_allclose(actual, expected, atol=ATOL, rtol=RTOL, equal_nan=False)
++
++    def test_cached_logits_match_full_replay_at_each_step(self):
++        for end in PREFIX_LENGTHS:
++            with self.subTest(prefix_length=end):
++                self.assert_logits_match(end)
++
++    def test_first_token_in_second_kv_block_matches_replay(self):
++        before = self.cached_calls[BLOCK_SIZE]
++        crossing = self.cached_calls[BLOCK_SIZE + 1]
++        self.assertEqual(before["positions"], (BLOCK_SIZE - 1,))
++        self.assertEqual(crossing["positions"], (BLOCK_SIZE,))
++        first_block, second_block = crossing["blocks"]
++        self.assertGreaterEqual(first_block, 0)
++        self.assertEqual(second_block, first_block + 1)
++        self.assertEqual(before["blocks"], crossing["blocks"])
++        self.assert_logits_match(BLOCK_SIZE + 1)

@@ -1,0 +1,12 @@
+{
+  "short": {"input": 32, "output": 32, "why": "Original 128-token-limit comparison"},
+  "prefill_512": {"input": 512, "output": 1, "why": "Prompt processing cost; no ITL for one output token"},
+  "prefill_4096": {"input": 4096, "output": 1, "why": "Attention scaling and first-token latency"},
+  "decode_128": {"input": 128, "output": 128, "why": "Cache benefit during generation"},
+  "decode_512": {"input": 128, "output": 512, "why": "Growth of repeated-prefix work"},
+  "context_2048": {"input": 2048, "output": 128, "why": "KV read bandwidth and context scaling"},
+  "context_7680": {"input": 7680, "output": 128, "why": "Near-limit contexts with tokenization headroom"},
+  "mixed": {"distribution": "128,64:60;1024,128:30;4096,256:10", "why": "Heterogeneous scheduling, churn and tail latency"},
+  "mixed_small": {"distribution": "64,32:60;256,64:30;1024,128:10", "why": "Compact mixed-length scheduling diagnostic; not a production traffic trace"},
+  "shared_prefix": {"input": 128, "output": 128, "prefix": 1024, "pool": 4, "why": "Warm shared-prefix reuse; compare with cold/prefix-disabled runs"}
+}
